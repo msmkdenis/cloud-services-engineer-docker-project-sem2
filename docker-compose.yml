@@ -1,0 +1,79 @@
+services:
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: docker-project-backend:latest
+    container_name: momo-store-backend
+    restart: on-failure
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://localhost:8081/health"] # Команда проверки (wget проверяет доступность эндпоинта без скачивания)
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    cap_drop:
+      - ALL # Критически важная настройка безопасности: удаление ВСЕХ привилегий Linux из контейнера
+    security_opt:
+      - no-new-privileges:true # Блокировка повышения привилегий внутри контейнера
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+    networks:
+      - inner-net # Подключение сервиса только к внутренней сети `inner-net`
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: docker-project-frontend:latest
+    container_name: momo-store-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      # Монтирование файла конфигурации Nginx с хоста в контейнер.
+      # Режим `:ro` (read-only) предотвращает изменение файла из контейнера.
+      - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    environment: # Установка переменных окружения внутри контейнера
+      - VUE_APP_API_URL=http://backend:8081
+    depends_on:
+      backend:
+        condition: service_healthy # Ждать, пока healthcheck бэкенда не станет успешным, прежде чем запустить фронтенд.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/momo-store/"] # Проверка здоровья через curl (флаг -f для fail on error)
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    cap_drop:
+      - ALL # Удаление всех привилегий по умолчанию
+    cap_add: # Явное добавление минимально необходимых привилегий для работы процесса
+      - NET_BIND_SERVICE # Позволяет Nginx bind'иться на порты ниже 1024 (порт 80)
+      - CHOWN # Для смены владельца файлов (может требоваться Nginx для логов и т.д.)
+      - SETGID # Для смены группы
+      - SETUID # Для смены пользователя (Nginx обычно запускается от root, затем переключается на www-data)
+    security_opt:
+      - no-new-privileges:true  # Блокировка повышения привилегий внутри контейнера
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    networks:
+      - public-net # Подключение к публичной сети (чтобы принимать входящие запросы)
+      - inner-net  # Подключение к внутренней сети (чтобы иметь доступ к бэкенду)
+
+networks:
+  public-net:
+    driver: bridge
+  inner-net:
+    driver: bridge
+    internal: true # Сеть изолирована от исходящего трафика в интернет.
+                   # Контейнеры в этой сети могут общаться только друг с другом.
+                   # Бэкенд, находящийся только в этой сети, не может быть достигнут извне, только через фронтенд.
